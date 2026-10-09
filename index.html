@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ひとりごと</title>
+  <meta name="description" content="ひとりごとを書くと、聞き役のキャラクターがやさしく返事をくれる。気持ちは夜空の地図に星として残ります。">
+  <meta name="theme-color" content="#171D3A">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💭</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">💭</span>
+      <span class="brand-name">ひとりごと</span>
+    </div>
+    <div class="user-box" id="userBox" hidden>
+      <button type="button" class="user-chip" id="btnSettings" aria-label="設定を開く">
+        <span id="userCharIcon" aria-hidden="true">🍬</span>
+        <span id="userName">ゲスト</span>
+      </button>
+      <button type="button" class="text-btn" id="btnLogout">ログアウト</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- ===================== 未ログイン ===================== -->
+    <section id="authView" class="view" hidden>
+      <div class="hero">
+        <h1 class="hero-title">だれにも言わないことを、<br>ここでつぶやこう。</h1>
+        <p class="hero-sub">ひとりごとを書くと、聞き役のキャラクターがやさしく返事をくれます。<br>気持ちは夜空の地図に、星になって残ります。</p>
+      </div>
+
+      <div class="paper auth-card">
+        <div class="seg" role="tablist" aria-label="ログイン・登録の切り替え">
+          <button type="button" role="tab" class="seg-btn" data-auth="login" aria-selected="true">ログイン</button>
+          <button type="button" role="tab" class="seg-btn" data-auth="register" aria-selected="false">はじめて登録</button>
+          <button type="button" role="tab" class="seg-btn" data-auth="forgot" aria-selected="false">パスワードを忘れた</button>
+        </div>
+
+        <form id="loginForm" class="auth-form" novalidate>
+          <label class="field">
+            <span class="field-label">メールアドレス</span>
+            <input type="email" name="email" autocomplete="email" inputmode="email" required>
+          </label>
+          <label class="field">
+            <span class="field-label">パスワード</span>
+            <span class="pw-wrap">
+              <input type="password" name="password" autocomplete="current-password" required>
+              <button type="button" class="pw-toggle" aria-label="パスワードを表示" aria-pressed="false"></button>
+            </span>
+          </label>
+          <button type="submit" class="btn btn-primary btn-wide">ログイン</button>
+          <p class="form-note" role="status"></p>
+        </form>
+
+        <form id="registerForm" class="auth-form" novalidate hidden>
+          <label class="field">
+            <span class="field-label">メールアドレス</span>
+            <input type="email" name="email" autocomplete="email" inputmode="email" required>
+          </label>
+          <label class="field">
+            <span class="field-label">ニックネーム（20文字まで）</span>
+            <input type="text" name="nickname" maxlength="20" autocomplete="nickname" required>
+          </label>
+          <p class="hint">登録すると、仮パスワードがメールで届きます。はじめてログインしたときに、自分のパスワードに変えてもらいます。</p>
+          <button type="submit" class="btn btn-primary btn-wide">仮パスワードを受け取る</button>
+          <p class="form-note" role="status"></p>
+        </form>
+
+        <form id="forgotForm" class="auth-form" novalidate hidden>
+          <label class="field">
+            <span class="field-label">登録したメールアドレス</span>
+            <input type="email" name="email" autocomplete="email" inputmode="email" required>
+          </label>
+          <p class="hint">新しい仮パスワードをメールで送ります。ログイン後にパスワードを設定し直してください。</p>
+          <button type="submit" class="btn btn-primary btn-wide">仮パスワードを再発行する</button>
+          <p class="form-note" role="status"></p>
+        </form>
+      </div>
+    </section>
+
+    <!-- ===================== ログイン後 ===================== -->
+    <section id="appView" class="view" hidden>
+      <nav class="tabs" role="tablist" aria-label="メニュー">
+        <button type="button" role="tab" class="tab" data-tab="post" aria-selected="true"><span aria-hidden="true">✏️</span>つぶやく</button>
+        <button type="button" role="tab" class="tab" data-tab="mine" aria-selected="false"><span aria-hidden="true">📔</span>わたしの記録</button>
+        <button type="button" role="tab" class="tab" data-tab="public" aria-selected="false"><span aria-hidden="true">🫧</span>みんなの</button>
+        <button type="button" role="tab" class="tab" data-tab="map" aria-selected="false"><span aria-hidden="true">🌌</span>気持ちの夜空</button>
+      </nav>
+
+      <!-- つぶやく -->
+      <div class="panel" id="tab-post" role="tabpanel">
+        <form id="postForm" class="paper composer" novalidate>
+          <label class="composer-label" for="postText">いま、なにを思ってる？</label>
+          <textarea id="postText" maxlength="400" rows="5" placeholder="うまく言えなくても大丈夫。思ったことをそのまま。"></textarea>
+          <p class="counter"><span id="postCount">0</span> / 400</p>
+
+          <fieldset class="picker">
+            <legend>きもちの絵文字</legend>
+            <div id="emojiPicker" class="emoji-row"></div>
+          </fieldset>
+
+          <fieldset class="picker">
+            <legend>きもちのタグ（えらばなくてもOK）</legend>
+            <div id="tagPicker" class="chip-row"></div>
+          </fieldset>
+
+          <fieldset class="picker">
+            <legend>だれに聞いてもらう？</legend>
+            <div id="charPicker" class="char-grid"></div>
+          </fieldset>
+
+          <div class="visibility">
+            <label class="check"><input type="checkbox" id="postPublic"> みんなに公開する</label>
+            <label class="check check-sub"><input type="checkbox" id="postAnon" disabled> ニックネームを出さずに公開する</label>
+            <p class="vis-now" id="visHint"></p>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-wide" id="postSubmit">つぶやく</button>
+        </form>
+      </div>
+
+      <!-- わたしの記録 -->
+      <div class="panel" id="tab-mine" role="tabpanel" hidden>
+        <div class="panel-head">
+          <h2 class="panel-title">わたしの記録</h2>
+          <span class="panel-meta" id="mineMeta"></span>
+        </div>
+        <div id="mineList" class="post-list"></div>
+        <button type="button" class="btn btn-ghost btn-wide" id="mineMore" hidden>もっと読む</button>
+      </div>
+
+      <!-- みんなの -->
+      <div class="panel" id="tab-public" role="tabpanel" hidden>
+        <div class="panel-head">
+          <h2 class="panel-title">みんなのひとりごと</h2>
+          <button type="button" class="btn btn-ghost btn-small" id="publicReload">新しいのを読む</button>
+        </div>
+        <p class="panel-lead">リアクションはだれが押したか分かりません。気軽にどうぞ。</p>
+        <div id="publicList" class="post-list"></div>
+        <button type="button" class="btn btn-ghost btn-wide" id="publicMore" hidden>もっと読む</button>
+      </div>
+
+      <!-- 気持ちの夜空 -->
+      <div class="panel" id="tab-map" role="tabpanel" hidden>
+        <div class="panel-head">
+          <h2 class="panel-title">気持ちの夜空</h2>
+          <div class="seg seg-dark" role="tablist" aria-label="表示する星">
+            <button type="button" role="tab" class="seg-btn" data-scope="mine" aria-selected="true">わたしの星</button>
+            <button type="button" role="tab" class="seg-btn" data-scope="all" aria-selected="false">みんなの星</button>
+          </div>
+        </div>
+
+        <div class="area-card" id="areaCard" aria-live="polite"></div>
+
+        <div class="map-wrap" id="mapWrap">
+          <canvas id="mapCanvas" tabindex="0" role="img"
+            aria-label="感情の4象限マップ。横軸は左がネガティブ・右がポジティブ、縦軸は下がチル・上がパッション。矢印キーで星を順番に選べます。"></canvas>
+          <div class="map-popup" id="mapPopup" hidden></div>
+        </div>
+        <p class="map-note">星をタップ（パソコンはマウスを重ねる）と、ひとりごとと返事が読めます。「みんなの星」では、黄色い輪があなたの星です。</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="appName">ひとりごと</span> <span id="appVersion">v1.0.0</span>
+  </footer>
+
+  <!-- ===================== ダイアログ ===================== -->
+  <dialog id="pwDialog" class="dialog" aria-labelledby="pwTitle">
+    <form id="pwForm" class="dialog-body" novalidate>
+      <h2 class="dialog-title" id="pwTitle">新しいパスワードを決めましょう</h2>
+      <p class="hint" id="pwLead">メールで届いた仮パスワードから、自分だけのパスワードに変えてください。</p>
+      <label class="field">
+        <span class="field-label" id="pwCurrentLabel">仮パスワード</span>
+        <span class="pw-wrap">
+          <input type="password" name="currentPassword" autocomplete="current-password" required>
+          <button type="button" class="pw-toggle" aria-label="パスワードを表示" aria-pressed="false"></button>
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">新しいパスワード（8文字以上・英字と数字を両方）</span>
+        <span class="pw-wrap">
+          <input type="password" name="newPassword" autocomplete="new-password" minlength="8" maxlength="64" required>
+          <button type="button" class="pw-toggle" aria-label="パスワードを表示" aria-pressed="false"></button>
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">新しいパスワード（確認）</span>
+        <span class="pw-wrap">
+          <input type="password" name="confirmPassword" autocomplete="new-password" maxlength="64" required>
+          <button type="button" class="pw-toggle" aria-label="パスワードを表示" aria-pressed="false"></button>
+        </span>
+      </label>
+      <p class="form-note" role="status"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" id="pwCancel">やめる</button>
+        <button type="submit" class="btn btn-primary">パスワードを変更する</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" class="dialog" aria-labelledby="settingsTitle">
+    <form id="settingsForm" class="dialog-body" novalidate>
+      <h2 class="dialog-title" id="settingsTitle">設定</h2>
+      <p class="hint" id="settingsEmail"></p>
+      <label class="field">
+        <span class="field-label">ニックネーム（20文字まで）</span>
+        <input type="text" name="nickname" maxlength="20" required>
+      </label>
+      <label class="field">
+        <span class="field-label">いつもの聞き役</span>
+        <select name="defaultCharacter" id="settingsChar"></select>
+      </label>
+      <button type="button" class="text-btn text-btn-dark" id="openPwChange">パスワードを変更する</button>
+      <p class="form-note" role="status"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" data-close>閉じる</button>
+        <button type="submit" class="btn btn-primary">保存する</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="replyDialog" class="dialog dialog-reply" aria-labelledby="replyName">
+    <div class="dialog-body">
+      <div class="reply-who">
+        <span class="reply-icon" id="replyIcon" aria-hidden="true">🍬</span>
+        <span class="reply-name" id="replyName">なにわのおかん</span>
+      </div>
+      <p class="reply-text" id="replyText"></p>
+      <p class="reply-zone" id="replyZone"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" data-close>閉じる</button>
+        <button type="button" class="btn btn-primary" id="replyToMap">夜空で見る</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="loading" id="loading" hidden>
+    <div class="loading-box">
+      <span class="loading-icon" id="loadingIcon" aria-hidden="true">💭</span>
+      <p id="loadingText">読み込み中…</p>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
