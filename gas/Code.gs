@@ -1,6 +1,6 @@
 /**
  * ひとりごと — GAS バックエンド
- * Version: v1.0.0
+ * Version: v1.1.0
  *
  * ■ スクリプトプロパティ（プロジェクトの設定 → スクリプト プロパティ）
  *   GEMINI_API_KEY  … 必須。Gemini APIキー
@@ -17,7 +17,7 @@
  *   ※ コードを変更したら「デプロイを管理 → 編集 → 新バージョン」で再デプロイが必要
  */
 
-const APP_VERSION = 'v1.0.0';
+const APP_VERSION = 'v1.1.0';
 const APP_NAME = 'ひとりごと';
 const TZ = 'Asia/Tokyo';
 
@@ -43,6 +43,12 @@ const CHARS_PW = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
 const CHARS_ALNUM = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 const REACTION_TYPES = ['wakaru', 'yoshiyoshi', 'erai', 'gyu'];
+
+// 音声入力
+const TRANSCRIBE_COOLDOWN_SEC = 4;
+const AUDIO_MAX_B64 = 10 * 1024 * 1024; // base64で約10MB（2分の録音なら十分）
+const AUDIO_MIME = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/aac', 'audio/x-m4a', 'audio/flac'];
+const EMOJI_CHOICES = ['😊', '🥰', '😆', '😌', '🍵', '✨', '🔥', '🤔', '😴', '🫠', '🌧️', '😢', '😭', '😰', '😤', '😡', '🌙', '💭'];
 
 // 感情タグ → AIが使えないときの座標の目安 [X, Y]
 const EMOTION_HINTS = {
@@ -120,6 +126,7 @@ function routes_() {
     changePassword: { fn: changePassword_, auth: true, allowFirst: true },
     updateProfile: { fn: updateProfile_, auth: true },
     createPost: { fn: createPost_, auth: true },
+    transcribe: { fn: transcribe_, auth: true },
     listMyPosts: { fn: listMyPosts_, auth: true },
     listPublic: { fn: listPublic_, auth: true },
     setVisibility: { fn: setVisibility_, auth: true },
@@ -527,6 +534,111 @@ function analyzeWithGemini_(text, tag, emoji, charKey) {
     const h = EMOTION_HINTS[tag] || [0, 0];
     return { reply: FALLBACK_REPLIES[charKey] || FALLBACK_REPLIES.obachan, x: h[0], y: h[1], source: 'fallback' };
   }
+}
+
+/* =========================================================
+ * Gemini：音声 → 整理したひとりごと
+ *   録音した音声はGeminiに渡すだけで、シートやDriveには保存しない
+ * ========================================================= */
+
+function transcribe_(p, ctx) {
+  const audio = String(p.audio || '');
+  const mime = String(p.mimeType || '').split(';')[0].trim().toLowerCase();
+  if (!audio) throw AppError('BAD_INPUT', '音声が届きませんでした。もう一度話してみてください');
+  if (AUDIO_MIME.indexOf(mime) < 0) throw AppError('BAD_INPUT', 'この音声形式には対応していません（' + (mime || '不明') + '）');
+  if (audio.length > AUDIO_MAX_B64) throw AppError('BAD_INPUT', '音声が長すぎます。2分以内で話してください');
+  if (!/^[A-Za-z0-9+/=]+$/.test(audio)) throw AppError('BAD_INPUT', '音声データが壊れています。もう一度録音してください');
+
+  const cache = CacheService.getScriptCache();
+  const ck = 'voice_' + ctx.user.userId;
+  if (cache.get(ck)) throw AppError('TOO_SOON', '続けて使うときは、数秒あけてください');
+  cache.put(ck, '1', TRANSCRIBE_COOLDOWN_SEC);
+
+  const key = prop_('GEMINI_API_KEY');
+  if (!key) throw AppError('SETUP', 'GEMINI_API_KEY が未設定です');
+  const model = prop_('GEMINI_MODEL') || 'gemini-2.5-flash';
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+
+  const system = [
+    'あなたは音声メモを「ひとりごと」の文章に整える係です。',
+    '',
+    '【ルール】',
+    '- 話した本人の一人称の文章として、自然な日本語に整える。',
+    '- 「えーと」「あのー」「なんか」などのつなぎ言葉、言い直し、同じことの繰り返しは取り除く。',
+    '- 明らかな聞き間違いは文脈から直す。',
+    '- 話した内容・気持ち・方言や口ぐせのニュアンスはできるだけ残す。話していないことは足さない。',
+    '- 返事・感想・アドバイスは書かない。整えた本文だけにする。',
+    '- 句読点を付け、話題が変わるところで改行する。',
+    '- ' + TEXT_MAX + '文字以内。長いときは本人の言葉を残しながら要点をまとめる。',
+    '',
+    '【あわせて判定する項目】',
+    '- emotionTag：次の中から最も近いもの1つ。当てはまらなければ空文字 → ' + Object.keys(EMOTION_HINTS).join('、'),
+    '- emoji：次の中から気持ちに合うもの1つ → ' + EMOJI_CHOICES.join(' '),
+    '- heard：人の話し声が聞き取れたら true、無音や雑音だけなら false',
+    '',
+    '【出力】JSONのみ：{"text":"整えた本文","emotionTag":"…","emoji":"…","heard":true}',
+  ].join('\n');
+
+  const body = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{
+      role: 'user',
+      parts: [
+        { inlineData: { mimeType: mime, data: audio } },
+        { text: 'この音声を、ルールに従ってひとりごとの文章に整えてください。' },
+      ],
+    }],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 4096,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          text: { type: 'STRING' },
+          emotionTag: { type: 'STRING' },
+          emoji: { type: 'STRING' },
+          heard: { type: 'BOOLEAN' },
+        },
+        required: ['text', 'heard'],
+      },
+    },
+  };
+
+  const res = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-goog-api-key': key },
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) {
+    console.warn('transcribe HTTP ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 500));
+    throw AppError('AI_ERROR', '音声をうまく読み取れませんでした。少し待ってからもう一度お試しください');
+  }
+
+  let o;
+  try {
+    const j = JSON.parse(res.getContentText());
+    const parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];
+    const raw = parts.filter(function (x) { return !x.thought; })
+      .map(function (x) { return x.text || ''; }).join('')
+      .replace(/```json|```/g, '').trim();
+    o = JSON.parse(raw);
+  } catch (err) {
+    console.warn('transcribe parse error: ' + err);
+    throw AppError('AI_ERROR', '音声をうまく読み取れませんでした。もう一度お試しください');
+  }
+
+  const text = String(o.text || '').replace(/\r\n?/g, '\n').trim();
+  if (!o.heard || !text) {
+    throw AppError('NO_SPEECH', '声が聞き取れませんでした。マイクに近づいて、もう一度話してみてください');
+  }
+  return {
+    text: Array.from(text).slice(0, TEXT_MAX).join(''),
+    emotionTag: EMOTION_HINTS[o.emotionTag] ? o.emotionTag : '',
+    emoji: EMOJI_CHOICES.indexOf(o.emoji) >= 0 ? o.emoji : '',
+  };
 }
 
 /* =========================================================

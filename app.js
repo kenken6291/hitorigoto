@@ -1,5 +1,5 @@
 /* =========================================================
- * ひとりごと — app.js  v1.0.0
+ * ひとりごと — app.js  v1.1.0
  * ========================================================= */
 (() => {
   'use strict';
@@ -35,6 +35,8 @@
   };
   const ZONE_ORDER = ['bakuhatsu', 'kazan', 'numa', 'engawa', 'nagi'];
   const NAGI_RADIUS = 30;
+  const VOICE_MAX_SEC = 120;
+  const TEXT_MAX = 400;
 
   const EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
   const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.9 17.9A10.4 10.4 0 0 1 12 19c-6.4 0-10-7-10-7a18.5 18.5 0 0 1 4.2-5.1M9.9 5.2A9.6 9.6 0 0 1 12 5c6.4 0 10 7 10 7a18.6 18.6 0 0 1-2.2 3.2"/><path d="M14.1 14.2a3 3 0 0 1-4.3-4.3"/><path d="M3 3l18 18"/></svg>';
@@ -43,7 +45,7 @@
   const state = {
     token: localStorage.getItem(LS_TOKEN) || '',
     user: null,
-    compose: { emoji: '😊', tag: '', character: 'obachan' },
+    compose: { emoji: '😊', tag: '', character: 'obachan', emojiTouched: false },
     mine: { offset: 0, loaded: false, busy: false },
     pub: { offset: 0, loaded: false, busy: false },
     mapScope: 'mine',
@@ -252,6 +254,7 @@
   }
 
   function switchTab(name) {
+    Voice.cancelIfRecording();
     $$('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
     ['post', 'mine', 'public', 'map'].forEach((n) => { $('#tab-' + n).hidden = n !== name; });
     if (name === 'mine' && !state.mine.loaded) loadMine(true);
@@ -436,6 +439,7 @@
   async function onPost(e) {
     e.preventDefault();
     const ta = $('#postText');
+    if (Voice.isRecording()) { toast('録音中です。「話し終えた」を押してから投稿してください', true); return; }
     const text = ta.value.trim();
     if (!text) { toast('ひとりごとを書いてください', true); ta.focus(); return; }
     const charKey = ($('input[name="character"]:checked') || {}).value || state.compose.character;
@@ -454,6 +458,7 @@
         ta.value = '';
         updateCount();
         state.compose.tag = '';
+        state.compose.emojiTouched = false;
         $$('#tagPicker .chip').forEach((b) => b.setAttribute('aria-pressed', 'false'));
         state.mine.loaded = false;
         state.mapCache.mine = null;
@@ -481,6 +486,179 @@
     $('#replyText').textContent = post.aiReply;
     $('#replyZone').textContent = `あなたの星は ${z.icon}『${z.name}』に灯りました。`;
     $('#replyDialog').showModal();
+  }
+
+  /* =========================================================
+   * 音声入力（録音 → GAS → Geminiで整理 → 入力欄へ）
+   * ========================================================= */
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1] || '');
+      r.onerror = () => reject(new Error('音声データを読み込めませんでした'));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  function fmtSec(s) {
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  const Voice = {
+    rec: null,
+    stream: null,
+    chunks: [],
+    timer: 0,
+    startedAt: 0,
+    canceled: false,
+    mime: '',
+
+    supported() {
+      return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    },
+
+    isRecording() {
+      return !!(this.rec && this.rec.state === 'recording');
+    },
+
+    pickMime() {
+      const list = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+      if (typeof MediaRecorder.isTypeSupported !== 'function') return '';
+      return list.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    },
+
+    async toggle() {
+      if (this.isRecording()) this.stop(false);
+      else await this.start();
+    },
+
+    async start() {
+      if (!this.supported()) {
+        toast('このブラウザは録音に対応していません。文字で入力してください', true);
+        return;
+      }
+      if ($('#postText').value.length >= TEXT_MAX) {
+        toast('入力欄がいっぱいです。少し消してから話してください', true);
+        return;
+      }
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      } catch (e) {
+        toast(e && e.name === 'NotAllowedError'
+          ? 'マイクの使用が許可されていません。ブラウザの設定でこのサイトのマイクを許可してください'
+          : 'マイクを使えませんでした。ほかのアプリがマイクを使っていないか確認してください', true);
+        return;
+      }
+      this.mime = this.pickMime();
+      this.chunks = [];
+      this.canceled = false;
+      try {
+        this.rec = new MediaRecorder(this.stream, this.mime ? { mimeType: this.mime } : undefined);
+      } catch {
+        this.release();
+        toast('録音を始められませんでした', true);
+        return;
+      }
+      this.rec.ondataavailable = (e) => { if (e.data && e.data.size) this.chunks.push(e.data); };
+      this.rec.onstop = () => this.finish();
+      this.rec.start(1000);
+      this.startedAt = Date.now();
+      this.setUi(true);
+      this.tick();
+      this.timer = setInterval(() => this.tick(), 250);
+    },
+
+    tick() {
+      const s = Math.floor((Date.now() - this.startedAt) / 1000);
+      $('#voiceTimer').textContent = `${fmtSec(Math.min(s, VOICE_MAX_SEC))} / ${fmtSec(VOICE_MAX_SEC)}`;
+      if (s >= VOICE_MAX_SEC) {
+        toast('2分たったので録音を止めました');
+        this.stop(false);
+      }
+    },
+
+    stop(cancel) {
+      this.canceled = cancel;
+      clearInterval(this.timer);
+      if (this.rec && this.rec.state !== 'inactive') this.rec.stop();
+    },
+
+    cancelIfRecording() {
+      if (this.isRecording()) this.stop(true);
+    },
+
+    release() {
+      if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+    },
+
+    setUi(on) {
+      const btn = $('#voiceBtn');
+      btn.setAttribute('aria-pressed', String(on));
+      $('#voiceLabel').textContent = on ? '⏹ 話し終えた' : '🎙️ 話して入力';
+      $('#voiceTimer').hidden = !on;
+      $('#voiceCancel').hidden = !on;
+      $('#postText').classList.toggle('is-recording', on);
+      $('#postSubmit').disabled = on;
+    },
+
+    async finish() {
+      const sec = (Date.now() - this.startedAt) / 1000;
+      const type = (this.rec && this.rec.mimeType) || this.mime || 'audio/webm';
+      this.release();
+      this.setUi(false);
+      if (this.canceled) { this.chunks = []; return; }
+      if (sec < 1.2 || !this.chunks.length) {
+        toast('短すぎて聞き取れませんでした。少し話してから「話し終えた」を押してください', true);
+        return;
+      }
+      const blob = new Blob(this.chunks, { type });
+      this.chunks = [];
+      const btn = $('#voiceBtn');
+      btn.disabled = true;
+      $('#postSubmit').disabled = true;
+      loading(true, '話したことを整えています…', '🎙️');
+      try {
+        const b64 = await blobToBase64(blob);
+        const data = await api('transcribe', { audio: b64, mimeType: type });
+        insertVoiceText(data);
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        loading(false);
+        btn.disabled = false;
+        $('#postSubmit').disabled = false;
+      }
+    },
+  };
+
+  function insertVoiceText(data) {
+    const ta = $('#postText');
+    const cur = ta.value.replace(/\s+$/, '');
+    let next = cur ? `${cur}\n${data.text}` : data.text;
+    let cut = false;
+    if (next.length > TEXT_MAX) { next = next.slice(0, TEXT_MAX); cut = true; }
+    ta.value = next;
+    updateCount();
+
+    if (data.emotionTag && !state.compose.tag) {
+      const chip = $(`#tagPicker [data-tag="${data.emotionTag}"]`);
+      if (chip) {
+        state.compose.tag = data.emotionTag;
+        $$('#tagPicker .chip').forEach((x) => x.setAttribute('aria-pressed', String(x === chip)));
+      }
+    }
+    if (data.emoji && !state.compose.emojiTouched) {
+      const eb = $(`#emojiPicker [data-emoji="${data.emoji}"]`);
+      if (eb) {
+        state.compose.emoji = data.emoji;
+        $$('#emojiPicker .emoji-btn').forEach((x) => x.setAttribute('aria-pressed', String(x === eb)));
+      }
+    }
+
+    toast(cut ? '400文字をこえた分は入りませんでした。手で整えてください' : '話した内容を入力しました。気になるところは手で直せます', cut);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
   }
 
   /* ---------------- 投稿カード ---------------- */
@@ -963,10 +1141,18 @@
     $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
     $('#postText').addEventListener('input', updateCount);
+    $('#voiceBtn').addEventListener('click', () => Voice.toggle());
+    $('#voiceCancel').addEventListener('click', () => { Voice.stop(true); toast('録音をやめました'); });
+    if (!Voice.supported()) {
+      $('#voiceBtn').hidden = true;
+      $('#voiceHint').textContent = 'このブラウザでは音声入力が使えません（最新のChrome・Safari・Edgeで使えます）。';
+    }
+    window.addEventListener('pagehide', () => Voice.cancelIfRecording());
     $('#emojiPicker').addEventListener('click', (e) => {
       const b = e.target.closest('[data-emoji]');
       if (!b) return;
       state.compose.emoji = b.dataset.emoji;
+      state.compose.emojiTouched = true;
       $$('#emojiPicker .emoji-btn').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
     });
     $('#tagPicker').addEventListener('click', (e) => {
@@ -1016,6 +1202,7 @@
     $$('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
 
     $('#btnLogout').addEventListener('click', async () => {
+      Voice.cancelIfRecording();
       try { await api('logout'); } catch { /* 期限切れでもログアウト扱い */ }
       clearSession();
       showAuth();

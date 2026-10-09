@@ -101,7 +101,16 @@
         <form id="postForm" class="paper composer" novalidate>
           <label class="composer-label" for="postText">いま、なにを思ってる？</label>
           <textarea id="postText" maxlength="400" rows="5" placeholder="うまく言えなくても大丈夫。思ったことをそのまま。"></textarea>
-          <p class="counter"><span id="postCount">0</span> / 400</p>
+          <div class="voice-row">
+            <button type="button" class="voice-btn" id="voiceBtn" aria-pressed="false">
+              <span class="voice-dot" aria-hidden="true"></span>
+              <span id="voiceLabel">🎙️ 話して入力</span>
+            </button>
+            <span class="voice-timer" id="voiceTimer" aria-live="off" hidden>0:00 / 2:00</span>
+            <button type="button" class="text-btn text-btn-dark" id="voiceCancel" hidden>やめる</button>
+            <p class="counter"><span id="postCount">0</span> / 400</p>
+          </div>
+          <p class="hint voice-hint" id="voiceHint">ボタンを押して話すと、AIが読みやすく整えて入力します（2分まで）。録音した音声は保存しません。</p>
 
           <fieldset class="picker">
             <legend>きもちの絵文字</legend>
@@ -172,7 +181,7 @@
   </main>
 
   <footer class="footer">
-    <span id="appName">ひとりごと</span> <span id="appVersion">v1.0.0</span>
+    <span id="appName">ひとりごと</span> <span id="appVersion">v1.1.0</span>
   </footer>
 
   <!-- ===================== ダイアログ ===================== -->
