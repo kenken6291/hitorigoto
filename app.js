@@ -1,5 +1,5 @@
 /* =========================================================
- * ひとりごと — app.js  v1.1.0
+ * ひとりごと — app.js  v1.2.0
  * ========================================================= */
 (() => {
   'use strict';
@@ -7,6 +7,7 @@
   const CFG = window.APP_CONFIG || {};
   const LS_TOKEN = 'hitorigoto_token';
   const LS_EMAIL = 'hitorigoto_email';
+  const LS_AUTOVOICE = 'hitorigoto_autovoice';
   const PAGE = CFG.PAGE_SIZE || 20;
 
   /* ---------------- 定数 ---------------- */
@@ -444,6 +445,8 @@
     if (!text) { toast('ひとりごとを書いてください', true); ta.focus(); return; }
     const charKey = ($('input[name="character"]:checked') || {}).value || state.compose.character;
     const c = charOf(charKey);
+    const autoVoice = $('#autoVoice').checked;
+    if (autoVoice) Speaker.unlock();
     await withButton($('#postSubmit'), async () => {
       loading(true, `${c.name}が聞いてくれています…`, c.icon);
       try {
@@ -463,7 +466,9 @@
         state.mine.loaded = false;
         state.mapCache.mine = null;
         if (data.post.isPublic) { state.pub.loaded = false; state.mapCache.all = null; }
+        loading(false);
         showReply(data.post);
+        if (autoVoice) Speaker.play(data.post.postId, $('#replySpeak'));
       } catch (err) {
         toast(err.message, true);
       } finally {
@@ -483,6 +488,8 @@
     state.lastPostId = post.postId;
     $('#replyIcon').textContent = post.characterIcon;
     $('#replyName').textContent = post.characterName + 'より';
+    $('#replyVoice').textContent = post.voice ? `声：${post.voice}（AIが選んだ声）` : '';
+    Speaker.setBtn($('#replySpeak'), 'idle');
     $('#replyText').textContent = post.aiReply;
     $('#replyZone').textContent = `あなたの星は ${z.icon}『${z.name}』に灯りました。`;
     $('#replyDialog').showModal();
@@ -549,6 +556,7 @@
           : 'マイクを使えませんでした。ほかのアプリがマイクを使っていないか確認してください', true);
         return;
       }
+      Speaker.stop();
       this.mime = this.pickMime();
       this.chunks = [];
       this.canceled = false;
@@ -661,6 +669,105 @@
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }
 
+  /* =========================================================
+   * 返事の読み上げ（Gemini 3.8 Flash TTS）
+   * ========================================================= */
+  const SILENT_WAV = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+  const SPEAK_LABEL = {
+    idle: '🔊 声で聞く',
+    loading: '⏳ 声を用意しています…',
+    playing: '⏹ 止める',
+    blocked: '▶ タップで再生',
+  };
+
+  const Speaker = {
+    audio: new Audio(),
+    urls: new Map(),      // postId → objectURL
+    pending: new Map(),   // postId → Promise
+    current: null,        // { postId, btn }
+
+    init() {
+      this.audio.preload = 'auto';
+      this.audio.addEventListener('ended', () => this.reset());
+      this.audio.addEventListener('error', () => { if (this.current) this.reset(); });
+    },
+
+    // iPhone等で、あとから自動再生できるようにタップの瞬間に音声を有効化しておく
+    unlock() {
+      try {
+        this.audio.src = SILENT_WAV;
+        const pr = this.audio.play();
+        if (pr) pr.catch(() => {});
+      } catch { /* noop */ }
+    },
+
+    setBtn(btn, st) {
+      if (!btn) return;
+      btn.textContent = SPEAK_LABEL[st];
+      btn.disabled = st === 'loading';
+      btn.setAttribute('aria-pressed', String(st === 'playing'));
+      btn.classList.toggle('is-blocked', st === 'blocked');
+    },
+
+    reset() {
+      if (this.current) this.setBtn(this.current.btn, 'idle');
+      this.current = null;
+    },
+
+    stop() {
+      this.audio.pause();
+      this.reset();
+    },
+
+    async load(postId) {
+      if (this.urls.has(postId)) return this.urls.get(postId);
+      if (!this.pending.has(postId)) {
+        const pr = api('speak', { postId }).then((d) => {
+          const bin = atob(d.audio);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const url = URL.createObjectURL(new Blob([bytes], { type: d.mimeType || 'audio/wav' }));
+          this.urls.set(postId, url);
+          return url;
+        }).finally(() => this.pending.delete(postId));
+        this.pending.set(postId, pr);
+      }
+      return this.pending.get(postId);
+    },
+
+    async play(postId, btn) {
+      if (this.current && this.current.postId === postId && !this.audio.paused) {
+        this.stop();
+        return;
+      }
+      this.stop();
+      this.current = { postId, btn };
+      this.setBtn(btn, 'loading');
+      let url;
+      try {
+        url = await this.load(postId);
+      } catch (err) {
+        if (this.current && this.current.postId === postId) this.reset();
+        toast(err.message, true);
+        return;
+      }
+      if (!this.current || this.current.postId !== postId) return; // 待っている間に別の操作があった
+      this.audio.src = url;
+      try {
+        await this.audio.play();
+        this.setBtn(btn, 'playing');
+      } catch {
+        // ブラウザが自動再生を止めた → もう一度タップしてもらう
+        this.setBtn(btn, 'blocked');
+        this.current = null;
+      }
+    },
+  };
+
+  function speakButton(postId) {
+    return `<button type="button" class="speak-btn" data-speak="${esc(postId)}" aria-pressed="false">${SPEAK_LABEL.idle}</button>`;
+  }
+
   /* ---------------- 投稿カード ---------------- */
   function visLabel(p) {
     if (!p.isPublic) return '<span class="badge badge-private">🔒 自分だけ</span>';
@@ -699,7 +806,7 @@
         <p class="post-text">${esc(p.text)}</p>
         <div class="ai-reply">
           <span class="ai-icon" aria-hidden="true">${esc(p.characterIcon)}</span>
-          <div><span class="ai-name">${esc(p.characterName)}</span><p class="ai-text">${esc(p.aiReply)}</p></div>
+          <div><span class="ai-name">${esc(p.characterName)}</span><p class="ai-text">${esc(p.aiReply)}</p>${speakButton(p.postId)}</div>
         </div>
         ${reactions || owner ? `<footer class="post-foot">${reactions}${owner}</footer>` : ''}
       </article>`;
@@ -765,6 +872,9 @@
     const card = e.target.closest('.post');
     if (!card) return;
     const postId = card.dataset.id;
+
+    const sb = e.target.closest('[data-speak]');
+    if (sb) { Speaker.play(sb.dataset.speak, sb); return; }
 
     const rb = e.target.closest('[data-react]');
     if (rb) {
@@ -875,6 +985,8 @@
         if (next) { e.preventDefault(); this.pinned = next; this.showPopup(next); this.draw(this.prog); }
       });
       this.popup.addEventListener('click', (e) => {
+        const sb = e.target.closest('[data-speak]');
+        if (sb) { this.pinned = this.pinned || this.hover; Speaker.play(sb.dataset.speak, sb); return; }
         if (e.target.closest('.popup-close')) { this.pinned = null; this.hidePopup(); this.draw(this.prog); this.canvas.focus(); }
       });
     },
@@ -1062,7 +1174,7 @@
         <button type="button" class="popup-close" aria-label="閉じる">×</button>
         <div class="popup-head"><span class="popup-emoji" aria-hidden="true">${esc(p.emoji)}</span><span>${esc(who)}　${timeAgo(p.createdAt)}</span></div>
         <p class="popup-text">${esc(p.text)}</p>
-        <div class="popup-reply"><span aria-hidden="true">${esc(p.characterIcon)}</span><p><b>${esc(p.characterName)}</b>\n${esc(p.aiReply)}</p></div>
+        <div class="popup-reply"><span aria-hidden="true">${esc(p.characterIcon)}</span><p><b>${esc(p.characterName)}</b>\n${esc(p.aiReply)}</p>${speakButton(p.postId)}</div>
         <p class="popup-zone">${z.icon} ${z.name}（X ${p.x} ／ Y ${p.y}）</p>`;
       this.popup.hidden = false;
       const q = this.pos(p);
@@ -1193,6 +1305,7 @@
     $('#pwDialog').addEventListener('cancel', (e) => { if (state.pwForced) e.preventDefault(); });
 
     $('#replyToMap').addEventListener('click', () => {
+      state.keepVoice = true;
       $('#replyDialog').close();
       state.mapScope = 'mine';
       switchTabSilently('map');
@@ -1201,8 +1314,17 @@
 
     $$('[data-close]').forEach((b) => b.addEventListener('click', () => b.closest('dialog').close()));
 
+    $('#replySpeak').addEventListener('click', () => { if (state.lastPostId) Speaker.play(state.lastPostId, $('#replySpeak')); });
+    $('#replyDialog').addEventListener('close', () => {
+      if (state.keepVoice) { state.keepVoice = false; return; } // 「夜空で見る」のときは聞きながら移動
+      Speaker.stop();
+    });
+    $('#autoVoice').checked = localStorage.getItem(LS_AUTOVOICE) !== 'off';
+    $('#autoVoice').addEventListener('change', (e) => localStorage.setItem(LS_AUTOVOICE, e.target.checked ? 'on' : 'off'));
+
     $('#btnLogout').addEventListener('click', async () => {
       Voice.cancelIfRecording();
+      Speaker.stop();
       try { await api('logout'); } catch { /* 期限切れでもログアウト扱い */ }
       clearSession();
       showAuth();
@@ -1225,6 +1347,7 @@
     renderComposer();
     renderCharPicker();
     StarMap.init();
+    Speaker.init();
     bind();
 
     if (!CFG.GAS_API_URL || CFG.GAS_API_URL.includes('XXXX')) {

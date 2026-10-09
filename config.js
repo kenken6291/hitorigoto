@@ -8,7 +8,7 @@ window.APP_CONFIG = {
   GAS_API_URL: 'https://script.google.com/macros/s/AKfycbxmEwPmE7Cyk3dbbqFeulaX1oJl75OmfQXubFzOOctnq9MsyckyngFs49oQeZwqp3ICVA/exec',
 
   APP_NAME: 'ひとりごと',
-  APP_VERSION: 'v1.1.0',
+  APP_VERSION: 'v1.2.0',
 
   // タイムラインの1回あたりの読み込み件数
   PAGE_SIZE: 20,

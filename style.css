@@ -1,5 +1,5 @@
 /* =========================================================
- * ひとりごと — style.css  v1.1.0
+ * ひとりごと — style.css  v1.2.0
  * コンセプト：夜の部屋。藍色の夜空に、スタンドの灯りと便箋。
  * ========================================================= */
 
@@ -569,6 +569,43 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--y
   overflow-wrap: anywhere;
 }
 .reply-zone { margin: 0; font-size: .88rem; color: var(--sumi-soft); }
+.reply-name-wrap { display: grid; line-height: 1.4; }
+.reply-voice { font-size: .78rem; color: var(--sumi-soft); }
+
+/* 読み上げボタン */
+.speak-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+  margin-top: 8px;
+  border: 1.5px solid #E7C76F;
+  border-radius: 999px;
+  padding: 4px 13px;
+  background: #FFF8E2;
+  color: #7A5A12;
+  font-size: .8rem;
+  font-weight: 700;
+}
+.speak-btn:hover:not(:disabled) { background: var(--akari-soft); }
+.speak-btn:disabled { opacity: .6; cursor: progress; }
+.speak-btn[aria-pressed="true"] { background: var(--akari); border-color: var(--akari-dark); color: var(--sumi); }
+.speak-btn.is-blocked { background: var(--yoru); border-color: var(--yoru); color: var(--kami); }
+.speak-btn-lg { margin-top: 0; padding: 9px 20px; font-size: .95rem; }
+.speak-btn[aria-pressed="true"]::after {
+  content: '';
+  width: 14px;
+  height: 10px;
+  background:
+    linear-gradient(var(--sumi), var(--sumi)) 0 100% / 3px 60% no-repeat,
+    linear-gradient(var(--sumi), var(--sumi)) 50% 100% / 3px 100% no-repeat,
+    linear-gradient(var(--sumi), var(--sumi)) 100% 100% / 3px 40% no-repeat;
+  animation: eq .8s ease-in-out infinite alternate;
+}
+@keyframes eq { to { background-size: 3px 30%, 3px 70%, 3px 100%; } }
+.ai-reply .speak-btn, .popup-reply .speak-btn { grid-column: 2; }
+.check-voice { font-size: .88rem; color: var(--sumi-soft); }
+.check-voice input { width: 18px; height: 18px; accent-color: var(--yoru); }
 
 /* ---------- ローディング・トースト ---------- */
 .loading {

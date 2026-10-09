@@ -133,6 +133,8 @@
             <p class="vis-now" id="visHint"></p>
           </div>
 
+          <label class="check check-voice"><input type="checkbox" id="autoVoice" checked> 返事を声でも聞く（キャラに合う声をAIが選びます）</label>
+
           <button type="submit" class="btn btn-primary btn-wide" id="postSubmit">つぶやく</button>
         </form>
       </div>
@@ -181,7 +183,7 @@
   </main>
 
   <footer class="footer">
-    <span id="appName">ひとりごと</span> <span id="appVersion">v1.1.0</span>
+    <span id="appName">ひとりごと</span> <span id="appVersion">v1.2.0</span>
   </footer>
 
   <!-- ===================== ダイアログ ===================== -->
@@ -243,9 +245,13 @@
     <div class="dialog-body">
       <div class="reply-who">
         <span class="reply-icon" id="replyIcon" aria-hidden="true">🍬</span>
-        <span class="reply-name" id="replyName">なにわのおかん</span>
+        <span class="reply-name-wrap">
+          <span class="reply-name" id="replyName">なにわのおかん</span>
+          <span class="reply-voice" id="replyVoice"></span>
+        </span>
       </div>
       <p class="reply-text" id="replyText"></p>
+      <button type="button" class="speak-btn speak-btn-lg" id="replySpeak" aria-pressed="false">🔊 声で聞く</button>
       <p class="reply-zone" id="replyZone"></p>
       <div class="dialog-actions">
         <button type="button" class="btn btn-ghost" data-close>閉じる</button>

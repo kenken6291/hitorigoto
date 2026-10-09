@@ -1,4 +1,4 @@
-# ひとりごと v1.1.0
+# ひとりごと v1.2.0
 
 ひとりごとを書くと、選んだキャラクターがやさしく返事をくれて、気持ちが「感情4象限マップ（気持ちの夜空）」に星として残るWebアプリです。
 
@@ -54,6 +54,10 @@ hitorigoto/
 | aiSource | gemini / fallback（AI失敗時の定型文） | gemini |
 | createdAt / updatedAt | 日時 | ISO日時 |
 | deleted | 論理削除 | TRUE / FALSE |
+| voice | AIが選んだ声（Gemini TTSの声の名前） | Sulafat |
+| voiceStyle | 読み上げの話し方 | 世話焼きで朗らか、あたたかく |
+| speechText | 読み上げ用に整えた返事（絵文字なし・<chuckle>等可） | |
+| audioFileId | Driveに保存した読み上げ音声（WAV）のファイルID | |
 
 ### Reactions（匿名リアクション）
 
@@ -65,6 +69,8 @@ hitorigoto/
 | createdAt | 日時 |
 
 ### Google Drive
+
+読み上げ音声は `hitorigoto_voice` フォルダに `投稿ID.wav` で保存され、2回目以降の再生はここから返します（作るのは最初に再生したときだけ）。
 
 `backupToDrive()` が毎日4時にスプレッドシートを `hitorigoto_backup` フォルダへコピーし、新しい14個を残します。
 
@@ -78,10 +84,12 @@ hitorigoto/
    - `GEMINI_API_KEY` … Google AI Studio で発行したキー（必須）
    - `APP_URL` … `https://kenken6291.github.io/hitorigoto/`（メールに載るログインURL）
    - `GEMINI_MODEL` … 変える場合のみ（既定 `gemini-2.5-flash`）
+   - `TTS_MODEL` … 変える場合のみ（既定 `gemini-3.8-flash-tts`。安く速くしたいなら `gemini-3.8-flash-lite-tts`）
 4. エディタで次の関数を順に実行（初回は権限の承認が出ます：スプレッドシート・Gmail・Drive・外部通信）
    - `setup` … シート作成と PEPPER 自動生成
    - `setupTriggers` … 毎日のバックアップ
-   - `testGemini` … 実行ログに `"source": "gemini"` と返事が出ればOK（`fallback` ならキーかモデル名を確認）
+   - `testGemini` … 実行ログに `"source": "gemini"` と返事・`voice` が出ればOK（`fallback` ならキーかモデル名を確認）
+   - `testTTS` … Drive の `hitorigoto_voice/test_tts.wav` が作られ、再生できればOK
 5. 「デプロイ → 新しいデプロイ → 種類：ウェブアプリ」
    - 実行するユーザー：**自分**
    - アクセスできるユーザー：**全員**
@@ -115,6 +123,8 @@ hitorigoto/
 - [ ] 「🎙️ 話して入力」で話す →「話し終えた」で、整えた文章が入力欄に入る（タグ・絵文字も自動で選ばれる）
 - [ ] 投稿の公開設定は既定で「自分だけ」
 - [ ] 投稿後にキャラクターの返事と「○○エリアに灯りました」が出る
+- [ ] 返事のダイアログで声が流れる（止められた場合は「▶ タップで再生」）
+- [ ] 記録・みんなの・夜空の吹き出しの「🔊 声で聞く」で再生できる
 - [ ] 「わたしの記録」で公開範囲の変更・削除ができる
 - [ ] 「みんなの」でリアクションを押す／もう一度押すと取り消し
 - [ ] 「気持ちの夜空」で星をタップ（PCはホバー）すると吹き出しが出る
@@ -122,7 +132,9 @@ hitorigoto/
 
 ## 5. 仕組みメモ
 
-- 音声入力（v1.1.0〜）：ブラウザの MediaRecorder で録音（最長2分）→ base64 で `transcribe` に送信 → Gemini が文字起こしと整理（つなぎ言葉の除去・句読点・400文字以内）を行い、感情タグと絵文字も提案します。音声はシートにもDriveにも保存しません。入力欄にすでに文章があるときは後ろに追記します。マイクはHTTPS（GitHub Pages）でのみ使えます。
+- 返事の読み上げ（v1.2.0〜）：返事を作るとき、Gemini がキャラごとの声の候補（例：おかん＝Sulafat/Gacrux/Callirrhoe/Vindemiatrix）から今回の返事に合う声と話し方（voiceStyle）、読み上げ用の文章（speechText）を同時に決めます。再生ボタンを押す（または投稿直後の自動再生）と `speak` が Gemini 3.8 Flash TTS（Interactions API、`speech_metadata.style`）で WAV を作り、Drive に保存して返します。
+
+- 音声入力（v1.2.0〜）：ブラウザの MediaRecorder で録音（最長2分）→ base64 で `transcribe` に送信 → Gemini が文字起こしと整理（つなぎ言葉の除去・句読点・400文字以内）を行い、感情タグと絵文字も提案します。音声はシートにもDriveにも保存しません。入力欄にすでに文章があるときは後ろに追記します。マイクはHTTPS（GitHub Pages）でのみ使えます。
 
 - 通信は `Content-Type: text/plain` の POST（CORSのプリフライト回避）。`{ action, token, payload }` を送り `{ ok, data | code, error }` が返ります。
 - セッションは CacheService（6時間・アクセスごとに延長）。パスワード変更・再発行で `sessionVer` が上がり、他端末のログインは切れます。

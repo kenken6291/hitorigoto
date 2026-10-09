@@ -1,10 +1,11 @@
 /**
  * ひとりごと — GAS バックエンド
- * Version: v1.1.0
+ * Version: v1.2.0
  *
  * ■ スクリプトプロパティ（プロジェクトの設定 → スクリプト プロパティ）
  *   GEMINI_API_KEY  … 必須。Gemini APIキー
- *   GEMINI_MODEL    … 任意。既定: gemini-2.5-flash
+ *   GEMINI_MODEL    … 任意。既定: gemini-2.5-flash（返事の文章・声選び・音声入力の整理）
+ *   TTS_MODEL       … 任意。既定: gemini-3.8-flash-tts（返事の読み上げ）
  *   SPREADSHEET_ID  … 任意。スプレッドシートにバインドしていない場合のみ指定
  *   APP_URL         … 任意。メール本文に載せるサイトURL（例: https://kenken6291.github.io/hitorigoto/）
  *   PEPPER          … 自動。setup() 実行時に自動生成（変更すると全員ログイン不可になるので触らない）
@@ -12,12 +13,13 @@
  * ■ 初回の手順
  *   1. setup() を実行（シート作成・PEPPER生成）
  *   2. setupTriggers() を実行（毎日4時にDriveへバックアップ）
- *   3. testGemini() でAI応答を確認
+ *   3. testGemini() でAI応答を確認、testTTS() で読み上げを確認
+ *   ※ v1.2.0 へ更新したときは setup() をもう一度実行（Postsシートに声の列が増えます）
  *   4. デプロイ → ウェブアプリ（実行ユーザー: 自分 / アクセス: 全員）
  *   ※ コードを変更したら「デプロイを管理 → 編集 → 新バージョン」で再デプロイが必要
  */
 
-const APP_VERSION = 'v1.1.0';
+const APP_VERSION = 'v1.2.0';
 const APP_NAME = 'ひとりごと';
 const TZ = 'Asia/Tokyo';
 
@@ -25,7 +27,8 @@ const HEADERS = {
   Users: ['userId', 'email', 'nickname', 'passwordHash', 'salt', 'isFirstLogin', 'defaultCharacter',
     'failCount', 'lockedUntil', 'sessionVer', 'createdAt', 'updatedAt', 'lastLoginAt'],
   Posts: ['postId', 'userId', 'text', 'emotionTag', 'emoji', 'isPublic', 'isAnonymous', 'character',
-    'aiReply', 'x', 'y', 'aiSource', 'createdAt', 'updatedAt', 'deleted'],
+    'aiReply', 'x', 'y', 'aiSource', 'createdAt', 'updatedAt', 'deleted',
+    'voice', 'voiceStyle', 'speechText', 'audioFileId'],
   Reactions: ['postId', 'userId', 'type', 'createdAt'],
 };
 
@@ -50,6 +53,22 @@ const AUDIO_MAX_B64 = 10 * 1024 * 1024; // base64で約10MB（2分の録音な�
 const AUDIO_MIME = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/aac', 'audio/x-m4a', 'audio/flac'];
 const EMOJI_CHOICES = ['😊', '🥰', '😆', '😌', '🍵', '✨', '🔥', '🤔', '😴', '🫠', '🌧️', '😢', '😭', '😰', '😤', '😡', '🌙', '💭'];
 
+// 読み上げ（Gemini 3.8 Flash TTS）
+const TTS_FOLDER = 'hitorigoto_voice';
+const TTS_COOLDOWN_SEC = 3;
+const TTS_SAMPLE_RATE = 24000;
+const TTS_TAGS = ['chuckle', 'chuckles', 'sigh', 'short pause', 'long pause', 'laugh', 'giggle', 'breath', 'exhales'];
+
+// 事前構築済みの声（Gemini TTS）とその持ち味。AIはキャラごとの候補から選ぶ
+const VOICE_TRAITS = {
+  Zephyr: '明るい', Puck: '弾む', Charon: '知的で落ち着いた', Kore: 'きっぱり', Fenrir: '興奮気味',
+  Leda: '若々しい', Orus: 'きっぱり', Aoede: '軽やか', Callirrhoe: 'おおらか', Autonoe: '明るい',
+  Enceladus: '息まじり', Iapetus: '澄んだ', Umbriel: 'のんびり', Algieba: 'なめらか', Despina: 'なめらか',
+  Erinome: '澄んだ', Algenib: 'しゃがれた', Rasalgethi: '物知り', Laomedeia: '弾む', Achernar: 'やわらかい',
+  Alnilam: 'きっぱり', Schedar: '落ち着いた', Gacrux: '大人びた', Pulcherrima: '前向き', Achird: '親しみやすい',
+  Zubenelgenubi: 'くだけた', Vindemiatrix: 'やさしい', Sadachbia: 'いきいき', Sadaltager: '博識', Sulafat: 'あたたかい',
+};
+
 // 感情タグ → AIが使えないときの座標の目安 [X, Y]
 const EMOTION_HINTS = {
   'うれしい': [70, 40], 'たのしい': [75, 65], 'ほっこり': [60, -55], 'すっきり': [55, -20],
@@ -60,22 +79,27 @@ const EMOTION_HINTS = {
 const CHARACTERS = {
   obachan: {
     name: 'なにわのおかん', icon: '🍬',
+    voices: ['Sulafat', 'Gacrux', 'Callirrhoe', 'Vindemiatrix'], voiceStyle: '世話焼きで朗らか、あたたかく',
     persona: '大阪の商店街にいる世話焼きのおばちゃん。こてこての関西弁（「〜やん」「〜やで」「せやせや」「ほんま」）。まず「よう言うてくれたなぁ」と受け止め、ツッコミは愛情たっぷりで軽く。最後は「飴ちゃんあげるわ🍬」のような小ネタで笑わせて締める。',
   },
   yousei: {
     name: 'ふわふわ妖精ぽわん', icon: '🧚',
+    voices: ['Leda', 'Laomedeia', 'Zephyr', 'Autonoe'], voiceStyle: 'ふんわり、ささやくようにやさしく',
     persona: '綿毛の森に住む小さな妖精。ひらがな多め、語尾は「〜だよぉ」「〜なの」「ふわ〜」。星くず・わたあめ・朝露などのきらきらした比喩で気持ちを包み、最後に小さなおまじないをひとつかける。',
   },
   shitsuji: {
     name: '執事セバスチャン', icon: '🎩',
+    voices: ['Charon', 'Sadaltager', 'Rasalgethi', 'Iapetus'], voiceStyle: '上品に、落ち着いて、ていねいに',
     persona: '名家に仕える老執事。最上級の敬語で相手を「ご主人様」と呼ぶ。どんな話も「さすがでございます」と全肯定し、温かい紅茶やブランケットを差し出すような気遣いの描写を入れる。上品なユーモアを少しだけ。',
   },
   neko: {
     name: 'こたつ猫', icon: '🐈',
+    voices: ['Achernar', 'Despina', 'Erinome', 'Leda'], voiceStyle: 'ゆるく、少し眠たげに、甘えるように',
     persona: 'こたつに住む気まぐれな猫。語尾は「〜にゃ」「〜にゃん」。一見そっけないけれど、そっと隣に来てくれる。「ゴロゴロ…」「しっぽでぽんぽん」など猫らしい仕草で寄り添う。',
   },
   ojiichan: {
     name: '縁側の源さん', icon: '🍵',
+    voices: ['Algenib', 'Umbriel', 'Schedar', 'Enceladus'], voiceStyle: 'ゆっくり、のんびり、穏やかに',
     persona: '田舎の縁側でお茶をすする80代のおじいちゃん。のんびりした口調（「〜じゃのう」「そうかそうか」）。自分の若いころの失敗談や季節の話を少し交え、「急がんでええ」と励ます。',
   },
 };
@@ -127,6 +151,7 @@ function routes_() {
     updateProfile: { fn: updateProfile_, auth: true },
     createPost: { fn: createPost_, auth: true },
     transcribe: { fn: transcribe_, auth: true },
+    speak: { fn: speak_, auth: true },
     listMyPosts: { fn: listMyPosts_, auth: true },
     listPublic: { fn: listPublic_, auth: true },
     setVisibility: { fn: setVisibility_, auth: true },
@@ -321,6 +346,7 @@ function createPost_(p, ctx) {
     isPublic: isPublic ? 'TRUE' : 'FALSE', isAnonymous: isAnonymous ? 'TRUE' : 'FALSE',
     character: character, aiReply: ai.reply, x: String(ai.x), y: String(ai.y), aiSource: ai.source,
     createdAt: now, updatedAt: now, deleted: 'FALSE',
+    voice: ai.voice, voiceStyle: ai.voiceStyle, speechText: ai.speechText, audioFileId: '',
   };
   withLock_(function () { append_('Posts', post); });
 
@@ -431,6 +457,7 @@ function postOut_(r, uid, nick, rx) {
     characterName: c.name,
     characterIcon: c.icon,
     aiReply: r.aiReply,
+    voice: VOICE_TRAITS[r.voice] ? r.voice : c.voices[0],
     x: Number(r.x) || 0,
     y: Number(r.y) || 0,
     createdAt: iso_(r.createdAt),
@@ -481,8 +508,15 @@ function buildSystemPrompt_(c) {
     '- 目安：「ため息…なんか疲れた」→ x:-40, y:-60 ／「最高すぎて叫びたい！」→ x:85, y:90 ／「まじでムカつく！！」→ x:-75, y:80 ／「縁側のお茶がおいしい」→ x:60, y:-70',
     '- 感情タグと絵文字は参考程度にし、本文の内容を優先する。',
     '',
+    '【声の演出】返事はあとで音声でも読み上げる。',
+    '- voice：次の候補から、このキャラクターと今回の返事の雰囲気に最も合う声を1つ選ぶ → ' +
+      c.voices.map(function (v) { return v + '（' + VOICE_TRAITS[v] + '）'; }).join('、'),
+    '- voiceStyle：読み上げの話し方を日本語20文字程度で（例：「やさしく、ゆっくり、包み込むように」）。年齢・性別・なまりは書かない。',
+    '- speechText：reply を声に出して読む用に整えたもの。内容と言い回しは reply と同じにし、絵文字・顔文字・記号は除く。' +
+      '自然なら <chuckle> <sigh> <short pause> <laugh> <giggle> <breath> を最大2つまで、英語のまま入れてよい。',
+    '',
     '【出力】次のJSONだけを返す。前置きや説明は書かない。',
-    '{"reply":"返事の文章","x":整数,"y":整数}',
+    '{"reply":"返事の文章","x":整数,"y":整数,"voice":"声の名前","voiceStyle":"話し方","speechText":"読み上げ用の文章"}',
   ].join('\n');
 }
 
@@ -505,8 +539,15 @@ function analyzeWithGemini_(text, tag, emoji, charKey) {
         responseMimeType: 'application/json',
         responseSchema: {
           type: 'OBJECT',
-          properties: { reply: { type: 'STRING' }, x: { type: 'INTEGER' }, y: { type: 'INTEGER' } },
-          required: ['reply', 'x', 'y'],
+          properties: {
+            reply: { type: 'STRING' },
+            x: { type: 'INTEGER' },
+            y: { type: 'INTEGER' },
+            voice: { type: 'STRING', enum: c.voices },
+            voiceStyle: { type: 'STRING' },
+            speechText: { type: 'STRING' },
+          },
+          required: ['reply', 'x', 'y', 'voice', 'voiceStyle', 'speechText'],
         },
       },
     };
@@ -528,12 +569,154 @@ function analyzeWithGemini_(text, tag, emoji, charKey) {
     const o = JSON.parse(raw);
     const reply = String(o.reply || '').trim();
     if (!reply) throw new Error('返事が空でした');
-    return { reply: reply.slice(0, 600), x: clamp_(o.x), y: clamp_(o.y), source: 'gemini' };
+    const voice = c.voices.indexOf(o.voice) >= 0 ? o.voice : c.voices[0];
+    const voiceStyle = String(o.voiceStyle || '').replace(/[\r\n]/g, ' ').trim().slice(0, 60) || c.voiceStyle;
+    const speechText = cleanSpeechText_(o.speechText) || toSpeechText_(reply);
+    return {
+      reply: reply.slice(0, 600), x: clamp_(o.x), y: clamp_(o.y), source: 'gemini',
+      voice: voice, voiceStyle: voiceStyle, speechText: speechText.slice(0, 700),
+    };
   } catch (err) {
     console.warn('Gemini fallback: ' + err);
     const h = EMOTION_HINTS[tag] || [0, 0];
-    return { reply: FALLBACK_REPLIES[charKey] || FALLBACK_REPLIES.obachan, x: h[0], y: h[1], source: 'fallback' };
+    const fb = FALLBACK_REPLIES[charKey] || FALLBACK_REPLIES.obachan;
+    return {
+      reply: fb, x: h[0], y: h[1], source: 'fallback',
+      voice: c.voices[0], voiceStyle: c.voiceStyle, speechText: toSpeechText_(fb),
+    };
   }
+}
+
+/* =========================================================
+ * Gemini 3.8 Flash TTS：返事の読み上げ
+ *   1回作った音声は Drive「hitorigoto_voice」に保存し、2回目からはそれを返す
+ * ========================================================= */
+
+function speak_(p, ctx) {
+  const post = findPost_(p.postId);
+  const uid = ctx.user.userId;
+  if (!post || bool_(post.deleted) || (post.userId !== uid && !bool_(post.isPublic))) {
+    throw AppError('NOT_FOUND', 'このひとりごとは見つかりませんでした');
+  }
+  const c = CHARACTERS[post.character] || CHARACTERS.obachan;
+  const voice = c.voices.indexOf(post.voice) >= 0 ? post.voice : c.voices[0];
+
+  // 保存済みの音声があればそれを返す
+  if (post.audioFileId) {
+    try {
+      const bytes = DriveApp.getFileById(post.audioFileId).getBlob().getBytes();
+      return { postId: post.postId, audio: Utilities.base64Encode(bytes), mimeType: 'audio/wav', voice: voice, cached: true };
+    } catch (err) {
+      console.warn('voice file missing, regenerate: ' + err);
+    }
+  }
+
+  const cache = CacheService.getScriptCache();
+  const ck = 'tts_' + uid;
+  if (cache.get(ck)) throw AppError('TOO_SOON', '声を用意しています。数秒待ってからもう一度押してください');
+  cache.put(ck, '1', TTS_COOLDOWN_SEC);
+
+  const text = cleanSpeechText_(post.speechText) || toSpeechText_(post.aiReply);
+  if (!text) throw AppError('BAD_INPUT', '読み上げる文章がありません');
+  const style = post.voiceStyle || c.voiceStyle;
+  const bytes = synthesize_(text, voice, style);
+
+  let fileId = '';
+  try {
+    const file = getOrCreateFolder_(TTS_FOLDER).createFile(Utilities.newBlob(bytes, 'audio/wav', post.postId + '.wav'));
+    fileId = file.getId();
+    withLock_(function () {
+      update_('Posts', post._row, { audioFileId: fileId, voice: voice });
+    });
+  } catch (err) {
+    console.warn('voice save failed: ' + err); // 保存できなくても再生はできる
+  }
+  return { postId: post.postId, audio: Utilities.base64Encode(bytes), mimeType: 'audio/wav', voice: voice, cached: false };
+}
+
+function synthesize_(text, voice, style) {
+  const key = prop_('GEMINI_API_KEY');
+  if (!key) throw AppError('SETUP', 'GEMINI_API_KEY が未設定です');
+  const model = prop_('TTS_MODEL') || 'gemini-3.8-flash-tts';
+  const content = { type: 'text', text: text };
+  if (style) content.annotations = [{ type: 'speech_metadata', style: style }];
+  const body = {
+    model: model,
+    input: [{ type: 'user_input', content: [content] }],
+    response_format: { type: 'audio', mime_type: 'audio/wav', sample_rate: TTS_SAMPLE_RATE },
+    generation_config: { speech_config: [{ voice: voice }] },
+  };
+  const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-goog-api-key': key },
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) {
+    console.warn('TTS HTTP ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 500));
+    throw AppError('TTS_ERROR', '声を作れませんでした。少し待ってからもう一度お試しください');
+  }
+  const data = findAudioData_(JSON.parse(res.getContentText()));
+  if (!data) throw AppError('TTS_ERROR', '声のデータが返ってきませんでした。もう一度お試しください');
+  const bytes = Utilities.base64Decode(data);
+  return isWav_(bytes) ? bytes : pcmToWav_(bytes, TTS_SAMPLE_RATE);
+}
+
+// Interactions API の応答から音声データ（base64）を探す
+function findAudioData_(j) {
+  if (j.output_audio && j.output_audio.data) return j.output_audio.data;
+  let found = '';
+  (j.steps || []).forEach(function (step) {
+    (step.content || []).forEach(function (c) {
+      if (c && c.type === 'audio' && c.data) found = c.data;
+    });
+  });
+  if (found) return found;
+  (function walk(o) {
+    if (!o || typeof o !== 'object') return;
+    if (o.type === 'audio' && typeof o.data === 'string') { found = o.data; return; }
+    if (o.inlineData && o.inlineData.data) { found = o.inlineData.data; return; }
+    Object.keys(o).forEach(function (k) { walk(o[k]); });
+  })(j);
+  return found;
+}
+
+function isWav_(b) {
+  return b.length > 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46;
+}
+
+// 万一ヘッダーなしPCMが返ってきたときの保険（16bit / mono）
+function pcmToWav_(pcm, rate) {
+  const len = pcm.length;
+  const h = [];
+  function str(s) { for (let i = 0; i < s.length; i++) h.push(s.charCodeAt(i)); }
+  function u32(n) { h.push(n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >> 24) & 255); }
+  function u16(n) { h.push(n & 255, (n >> 8) & 255); }
+  str('RIFF'); u32(36 + len); str('WAVE'); str('fmt '); u32(16); u16(1); u16(1);
+  u32(rate); u32(rate * 2); u16(2); u16(16); str('data'); u32(len);
+  return h.map(function (b) { return b > 127 ? b - 256 : b; }).concat(pcm);
+}
+
+function cleanSpeechText_(v) {
+  let s = String(v || '');
+  s = s.replace(/<([^<>]{1,20})>/g, function (m, tag) {
+    return TTS_TAGS.indexOf(String(tag).trim().toLowerCase()) >= 0 ? '<' + String(tag).trim().toLowerCase() + '>' : '';
+  });
+  return stripEmoji_(s).replace(/[ \t]+/g, ' ').trim();
+}
+
+function toSpeechText_(v) {
+  return stripEmoji_(String(v || '').replace(/<[^<>]*>/g, '')).replace(/[ \t]+/g, ' ').trim();
+}
+
+function stripEmoji_(s) {
+  return s.replace(/\p{Extended_Pictographic}|\uFE0F|\u200D|[\u{1F3FB}-\u{1F3FF}]/gu, '');
+}
+
+function getOrCreateFolder_(name) {
+  const it = DriveApp.getFoldersByName(name);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(name);
 }
 
 /* =========================================================
@@ -695,9 +878,7 @@ function setupTriggers() {
 }
 
 function backupToDrive() {
-  const folderName = 'hitorigoto_backup';
-  const it = DriveApp.getFoldersByName(folderName);
-  const folder = it.hasNext() ? it.next() : DriveApp.createFolder(folderName);
+  const folder = getOrCreateFolder_('hitorigoto_backup');
   const stamp = Utilities.formatDate(new Date(), TZ, 'yyyyMMdd_HHmm');
   DriveApp.getFileById(ss_().getId()).makeCopy(APP_NAME + '_backup_' + stamp, folder);
 
@@ -706,6 +887,13 @@ function backupToDrive() {
   while (fi.hasNext()) files.push(fi.next());
   files.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
   files.slice(BACKUP_KEEP).forEach(function (f) { f.setTrashed(true); });
+}
+
+function testTTS() {
+  const c = CHARACTERS.obachan;
+  const bytes = synthesize_('よう言うてくれたなぁ。<chuckle> あんたはようやってる。飴ちゃんあげるわ。', c.voices[0], c.voiceStyle);
+  const file = getOrCreateFolder_(TTS_FOLDER).createFile(Utilities.newBlob(bytes, 'audio/wav', 'test_tts.wav'));
+  Logger.log('テスト音声を保存しました: ' + file.getUrl() + '（' + bytes.length + ' bytes）');
 }
 
 function testGemini() {
